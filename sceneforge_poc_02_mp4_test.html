@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171b18">
+<title>SceneForge PoC 02 | MP4 Export Test</title>
+<style>
+:root{color-scheme:dark;--bg:#171b18;--panel:#222a24;--line:#3b493e;--text:#e7e2d5;--muted:#b5b09f;--gold:#a68b62;--green:#91b58d;--red:#d98b80;--yellow:#d6bd7c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px 14px 40px}
+main{max-width:760px;margin:auto}h1{font:600 25px/1.2 Georgia,serif;margin:0 0 6px}.sub{font-size:12px;letter-spacing:.12em;color:var(--gold)}p,.muted{color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px;margin:13px 0}
+button{border:1px solid var(--gold);background:var(--gold);color:#171b18;font-weight:700;border-radius:9px;padding:13px 15px;font-size:14px;width:100%;margin-top:10px}
+button:disabled{opacity:.45}button.secondary{background:transparent;color:var(--text);border-color:var(--line)}
+#log{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,monospace;color:#d9d2c2;max-height:300px;overflow:auto}
+#progress{height:9px;background:#101410;border-radius:20px;overflow:hidden;margin-top:10px}#bar{height:100%;width:0;background:var(--gold);transition:width .15s}
+video{width:100%;background:#090b09;border-radius:9px;max-height:65vh}
+.good{color:var(--green)}.bad{color:var(--red)}small{color:var(--muted)}
+</style></head>
+<body><main>
+<div class="sub">SCENEFORGE STUDIO V2.0 · POC 02</div>
+<h1>10-Second MP4 Export Test</h1>
+<p>Pengujian ekspor nyata: Canvas 2D → H.264, test tone → AAC, lalu mux menjadi MP4. Target 1080 × 1920, 30 FPS, 10 detik.</p>
+<section class="panel">
+ <b>Device</b><div id="device" class="muted"></div>
+ <div style="margin-top:10px"><b>Test specification</b><div class="muted">1080 × 1920 · 30 FPS · 300 frames · H.264 + AAC-LC · MP4</div></div>
+ <div id="progress"><div id="bar"></div></div><div id="pct" class="muted">Belum dimulai</div>
+</section>
+<button id="start">Start 10-second MP4 Test</button>
+<button id="save" class="secondary" disabled>Save MP4</button>
+<section class="panel"><b>Export Log</b><div id="log">Menunggu pengujian.</div></section>
+<section class="panel" id="result" hidden><b>MP4 Result</b><p id="verify"></p><video id="player" controls playsinline></video></section>
+<section class="panel"><b>Catatan penting</b><p class="muted" style="margin-bottom:0">PoC ini memakai BufferTarget untuk video 10 detik saja agar file hasil bisa langsung diperiksa. Ini bukan strategi penyimpanan final SceneForge. Jika tes berhasil, tahap berikutnya menguji output bertahap dan penggunaan memori.</p></section>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id);
+const logLines=[];
+function log(s){logLines.push(s);$("log").textContent=logLines.join("\\n");$("log").scrollTop=$("log").scrollHeight}
+function progress(v,label){$("bar").style.width=Math.max(0,Math.min(100,v))+"%";$("pct").textContent=label}
+$("device").textContent=navigator.userAgent+" · secure="+isSecureContext;
+let outputBlob=null, outputUrl=null;
+$("start").addEventListener("click",async()=>{
+ $("start").disabled=true;$("save").disabled=true;$("result").hidden=true;
+ logLines.length=0;$("log").textContent="";
+ progress(0,"Memuat library muxer…");
+ let output=null;
+ try{
+  if(!isSecureContext)throw new Error("Secure context tidak aktif.");
+  if(typeof VideoEncoder!=="function"||typeof AudioEncoder!=="function")throw new Error("WebCodecs encoder tidak tersedia.");
+  const mod=await import("https://cdn.jsdelivr.net/npm/mediabunny/+esm");
+  const {Output,Mp4OutputFormat,BufferTarget,CanvasSource,AudioBufferSource,Quality}=mod;
+  log("Mediabunny berhasil dimuat.");
+  const W=1080,H=1920,FPS=30,DURATION=10,FRAMES=FPS*DURATION;
+  const canvas=document.createElement("canvas");canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext("2d",{alpha:false});
+  if(!ctx)throw new Error("Canvas 2D context gagal dibuat.");
+  const videoSource=new CanvasSource(canvas,{codec:"avc",bitrate:8000000,quality:new Quality("high")});
+  const audioSource=new AudioBufferSource({
+   codec:"aac",
+   fullCodecString:"mp4a.40.2",
+   quality:new Quality({bitrate:320000}),
+   transform:{numberOfChannels:2,sampleRate:48000}
+  });
+  output=new Output({format:new Mp4OutputFormat({fastStart:"reserve"}),target:new BufferTarget()});
+  output.addVideoTrack(videoSource,{frameRate:FPS});
+  output.addAudioTrack(audioSource);
+  output.setMetadataTags({title:"SceneForge PoC 02 Test"});
+  await output.start();log("MP4 output started.");
+  log("Rendering 300 frames…");
+  for(let i=0;i<FRAMES;i++){
+   const t=i/FPS;
+   ctx.fillStyle="#171b18";ctx.fillRect(0,0,W,H);
+   ctx.fillStyle="#29372d";ctx.fillRect(70,160,940,1600);
+   ctx.fillStyle="#d9d1be";ctx.textAlign="center";
+   ctx.font="bold 76px system-ui";ctx.fillText("SCENEFORGE PoC",W/2,420);
+   ctx.font="52px system-ui";ctx.fillText("H.264 + AAC TEST",W/2,520);
+   const x=150+780*(i/(FRAMES-1));
+   ctx.fillStyle="#a68b62";ctx.beginPath();ctx.arc(x,930,72,0,Math.PI*2);ctx.fill();
+   ctx.fillStyle="#e7e2d5";ctx.font="42px system-ui";ctx.fillText("Frame "+(i+1)+" / "+FRAMES,W/2,1160);
+   ctx.font="36px system-ui";ctx.fillText(t.toFixed(2)+" seconds",W/2,1230);
+   await videoSource.add(t,1/FPS);
+   if(i%10===0||i===FRAMES-1)progress(5+75*((i+1)/FRAMES),`Encoding frame ${i+1}/${FRAMES}`);
+  }
+  log("Video frames submitted.");
+  progress(82,"Membuat test audio 48 kHz stereo…");
+  const sampleRate=48000,length=sampleRate*DURATION;
+  const buffer=new AudioBuffer({numberOfChannels:2,length,sampleRate});
+  for(let ch=0;ch<2;ch++){
+   const data=buffer.getChannelData(ch);
+   for(let n=0;n<length;n++){
+    const time=n/sampleRate;
+    const active=(time<0.12)||(time>=4.94&&time<5.06)||(time>=9.88);
+    data[n]=active?0.12*Math.sin(2*Math.PI*880*time):0;
+   }
+  }
+  await audioSource.add(buffer);
+  log("AAC audio submitted: 48 kHz stereo, 10 seconds.");
+  videoSource.close();
+  audioSource.close();
+  progress(90,"Finalizing MP4…");
+  await output.finalize();
+  const bytes=output.target.buffer;
+  if(!bytes||bytes.byteLength<1000)throw new Error("MP4 output kosong atau terlalu kecil.");
+  outputBlob=new Blob([bytes],{type:"video/mp4"});
+  if(outputUrl)URL.revokeObjectURL(outputUrl);
+  outputUrl=URL.createObjectURL(outputBlob);
+  $("player").src=outputUrl;
+  $("result").hidden=false;
+  $("verify").textContent=`MP4 dibuat: ${(outputBlob.size/1024/1024).toFixed(2)} MiB. Buka player dan periksa apakah video serta test tone dapat diputar.`;
+  $("save").disabled=false;
+  progress(100,"Export complete · MP4 generated");
+  log("SUCCESS: MP4 finalized. File size "+outputBlob.size+" bytes.");
+  log("Next: play the result and use Save MP4.");
+ }catch(e){
+  log("FAILED: "+(e.name||"Error")+": "+e.message);
+  progress(0,"Export failed");
+  if(output){try{await output.cancel()}catch(_){}}
+ }finally{$("start").disabled=false}
+});
+$("save").addEventListener("click",async()=>{
+ if(!outputBlob)return;
+ try{
+  if(typeof showSaveFilePicker==="function"){
+   const handle=await showSaveFilePicker({suggestedName:"sceneforge-poc-02.mp4",types:[{description:"MP4 video",accept:{"video/mp4":[".mp4"]}}]});
+   const writable=await handle.createWritable();await writable.write(outputBlob);await writable.close();
+  }else{
+   const a=document.createElement("a");a.href=outputUrl;a.download="sceneforge-poc-02.mp4";a.click();
+  }
+  log("Save action completed.");
+ }catch(e){if(e.name!=="AbortError")log("Save failed: "+e.name+": "+e.message)}
+});
+</script></body></html>
