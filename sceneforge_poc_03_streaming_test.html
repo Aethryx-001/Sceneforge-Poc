@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171b18">
+<title>SceneForge PoC 03 | Streaming Export Test</title>
+<style>
+:root{color-scheme:dark;--bg:#171b18;--panel:#222a24;--line:#3b493e;--text:#e7e2d5;--muted:#b5b09f;--gold:#a68b62;--green:#91b58d;--red:#d98b80;--yellow:#d6bd7c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px 14px 40px}
+main{max-width:760px;margin:auto}h1{font:600 25px/1.2 Georgia,serif;margin:0 0 6px}.sub{font-size:12px;letter-spacing:.12em;color:var(--gold)}p,.muted{color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px;margin:13px 0}
+button{border:1px solid var(--gold);background:var(--gold);color:#171b18;font-weight:700;border-radius:9px;padding:13px 15px;font-size:14px;width:100%;margin-top:10px}
+button:disabled{opacity:.45}button.secondary{background:transparent;color:var(--text);border-color:var(--line)}
+#log{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,monospace;color:#d9d2c2;max-height:340px;overflow:auto}
+#progress{height:9px;background:#101410;border-radius:20px;overflow:hidden;margin-top:10px}#bar{height:100%;width:0;background:var(--gold);transition:width .15s}
+video{width:100%;background:#090b09;border-radius:9px;max-height:65vh}
+.good{color:var(--green)}.warn{color:var(--yellow)}
+</style></head>
+<body><main>
+<div class="sub">SCENEFORGE STUDIO V2.0 · POC 03</div>
+<h1>30-Second Streaming Export Test</h1>
+<p>Pengujian ekspor bertahap ke file. Frame dan audio dimasukkan per 1 detik, lalu MP4 ditulis melalui StreamTarget ke file yang kamu pilih. Target 1080 × 1920, 30 FPS, 30 detik.</p>
+<section class="panel">
+ <b>Device</b><div id="device" class="muted"></div>
+ <div style="margin-top:10px"><b>Test specification</b><div class="muted">1080 × 1920 · 30 FPS · 900 frames · H.264 + AAC-LC · MP4 StreamTarget</div></div>
+ <div id="progress"><div id="bar"></div></div><div id="pct" class="muted">Belum dimulai</div>
+ <div id="written" class="muted">Output ditulis: 0 bytes</div>
+</section>
+<button id="start">Start 30-second Streaming Test</button>
+<section class="panel"><b>Export Log</b><div id="log">Menunggu pengujian.</div></section>
+<section class="panel" id="result" hidden><b>Saved MP4 Result</b><p id="verify"></p><video id="player" controls playsinline></video></section>
+<section class="panel"><b>Sebelum mulai</b><p class="muted" style="margin-bottom:0">Saat tombol ditekan, Chrome akan meminta lokasi dan nama file MP4. Pilih folder yang mudah ditemukan. Biarkan Chrome tetap terbuka dan halaman tetap di depan sampai selesai. Jika kamu membatalkan pemilih file, tes tidak dimulai.</p></section>
+<section class="panel"><b>Yang diuji</b><p class="muted" style="margin-bottom:0">StreamTarget menulis potongan output berdasarkan posisi byte dan menerapkan backpressure. Frame diproses satu per satu, audio memakai buffer 1 detik, dan MP4 tidak ditampung seluruhnya dalam BufferTarget. Ini pengujian streaming output, bukan pengukuran RAM perangkat secara langsung.</p></section>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id), logLines=[];
+function log(s){logLines.push(s);$("log").textContent=logLines.join("\\n");$("log").scrollTop=$("log").scrollHeight}
+function progress(v,label){$("bar").style.width=Math.max(0,Math.min(100,v))+"%";$("pct").textContent=label}
+$("device").textContent=navigator.userAgent+" · secure="+isSecureContext;
+let savedUrl=null;
+$("start").addEventListener("click",async()=>{
+ if(typeof showSaveFilePicker!=="function"){
+  log("FAILED: File System Access save picker tidak tersedia. Tes streaming langsung ke file belum bisa dilakukan di browser ini.");
+  return;
+ }
+ $("start").disabled=true;$("result").hidden=true;logLines.length=0;$("log").textContent="";
+ let output=null,videoSource=null,audioSource=null,writable=null,target=null;
+ try{
+  // Call picker immediately from the user gesture.
+  const pickerPromise=showSaveFilePicker({
+   suggestedName:"sceneforge-poc-03-stream.mp4",
+   types:[{description:"MP4 video",accept:{"video/mp4":[".mp4"]}}]
+  });
+  const handle=await pickerPromise;
+  writable=await handle.createWritable();
+  progress(1,"Memuat Mediabunny…");
+  const mod=await import("https://cdn.jsdelivr.net/npm/mediabunny@1.66.2/+esm");
+  const {Output,Mp4OutputFormat,StreamTarget,CanvasSource,AudioBufferSource,Quality}=mod;
+  log("Mediabunny 1.66.2 berhasil dimuat.");
+  const W=1080,H=1920,FPS=30,SECONDS=30,FRAMES=FPS*SECONDS,SAMPLE_RATE=48000;
+  const canvas=document.createElement("canvas");canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext("2d",{alpha:false});
+  if(!ctx)throw new Error("Canvas 2D context gagal dibuat.");
+  videoSource=new CanvasSource(canvas,{
+   codec:"avc",quality:new Quality({bitrate:8000000}),
+   latencyMode:"quality",hardwareAcceleration:"no-preference"
+  });
+  audioSource=new AudioBufferSource({
+   codec:"aac",fullCodecString:"mp4a.40.2",
+   quality:new Quality({bitrate:320000}),
+   transform:{numberOfChannels:2,sampleRate:SAMPLE_RATE}
+  });
+  target=new StreamTarget(writable,{chunked:true,chunkSize:1024*1024});
+  let bytesWritten=0,writeEvents=0;
+  target.onwrite=(start,end)=>{
+   bytesWritten=Math.max(bytesWritten,end);writeEvents++;
+   $("written").textContent=`Output ditulis: ${bytesWritten.toLocaleString("id-ID")} bytes · ${writeEvents.toLocaleString("id-ID")} write events`;
+  };
+  output=new Output({format:new Mp4OutputFormat({fastStart:false}),target});
+  output.addVideoTrack(videoSource,{frameRate:FPS});
+  output.addAudioTrack(audioSource);
+  output.setMetadataTags({title:"SceneForge PoC 03 Streaming Test"});
+  await output.start();
+  log("MP4 StreamTarget started. Output langsung menuju file pilihanmu.");
+  log("Render memakai blok waktu 1 detik: 30 frame + 48.000 audio samples per channel.");
+  for(let sec=0;sec<SECONDS;sec++){
+   for(let j=0;j<FPS;j++){
+    const frame=sec*FPS+j,t=frame/FPS;
+    ctx.fillStyle="#171b18";ctx.fillRect(0,0,W,H);
+    ctx.fillStyle="#29372d";ctx.fillRect(70,160,940,1600);
+    ctx.fillStyle="#d9d1be";ctx.textAlign="center";
+    ctx.font="bold 76px system-ui";ctx.fillText("SCENEFORGE PoC",W/2,420);
+    ctx.font="52px system-ui";ctx.fillText("STREAMING EXPORT",W/2,520);
+    const x=150+780*(frame/(FRAMES-1));
+    ctx.fillStyle="#a68b62";ctx.beginPath();ctx.arc(x,930,72,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#e7e2d5";ctx.font="42px system-ui";ctx.fillText(`Frame ${frame+1} / ${FRAMES}`,W/2,1160);
+    ctx.font="36px system-ui";ctx.fillText(`${t.toFixed(2)} seconds`,W/2,1230);
+    await videoSource.add(t,1/FPS);
+   }
+   const audioBuffer=new AudioBuffer({numberOfChannels:2,length:SAMPLE_RATE,sampleRate:SAMPLE_RATE});
+   for(let ch=0;ch<2;ch++){
+    const data=audioBuffer.getChannelData(ch);
+    for(let n=0;n<SAMPLE_RATE;n++){
+     const globalTime=sec+n/SAMPLE_RATE;
+     const active=(globalTime<0.12)||(globalTime>=14.94&&globalTime<15.06)||(globalTime>=29.82&&globalTime<29.94);
+     data[n]=active?0.12*Math.sin(2*Math.PI*880*globalTime):0;
+    }
+   }
+   await audioSource.add(audioBuffer);
+   progress(((sec+1)/SECONDS)*85,`Processing second ${sec+1}/${SECONDS} · ${Math.min((sec+1)*FPS,FRAMES)}/${FRAMES} frames`);
+   if(sec===0||sec===14||sec===29)log(`Timeline checkpoint: ${sec+1}s completed.`);
+  }
+  videoSource.close();audioSource.close();
+  log("All 900 frames and 30 audio blocks submitted.");
+  progress(90,"Finalizing MP4 stream…");
+  await output.finalize();
+  const file=await handle.getFile();
+  if(file.size<1000)throw new Error(`Output file unexpectedly small: ${file.size} bytes`);
+  if(savedUrl)URL.revokeObjectURL(savedUrl);
+  savedUrl=URL.createObjectURL(file);
+  $("player").src=savedUrl;$("result").hidden=false;
+  $("verify").textContent=`File tersimpan: ${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB · ${file.size.toLocaleString("id-ID")} bytes.`;
+  progress(100,"Streaming export complete · File saved");
+  log(`SUCCESS: MP4 finalized and written to disk. Size: ${file.size} bytes.`);
+  log("Silakan putar video dan cek bunyi penanda di awal, detik 15, dan menjelang detik 30.");
+ }catch(e){
+  if(e.name==="AbortError"){log("Pemilih file dibatalkan. Tes tidak dijalankan.");progress(0,"Cancelled before export");}
+  else{
+   log(`FAILED: ${e.name||"Error"}: ${e.message}`);
+   if(e.stack)log(e.stack);
+   progress(0,"Streaming export failed");
+   if(output){try{await output.cancel()}catch(_){}}
+   else if(writable){try{await writable.abort()}catch(_){}}
+   try{videoSource?.close();audioSource?.close()}catch(_){}
+  }
+ }finally{$("start").disabled=false}
+});
+</script></body></html>
