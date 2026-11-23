@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171b18">
+<title>SceneForge PoC 03E | Append-only MP4 Test</title>
+<style>
+:root{color-scheme:dark;--bg:#171b18;--panel:#222a24;--line:#3b493e;--text:#e7e2d5;--muted:#b5b09f;--gold:#a68b62;--green:#91b58d;--red:#d98b80;--yellow:#d6bd7c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px 14px 40px}
+main{max-width:760px;margin:auto}h1{font:600 25px/1.2 Georgia,serif;margin:0 0 6px}.sub{font-size:12px;letter-spacing:.12em;color:var(--gold)}p,.muted{color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px;margin:13px 0}
+button{border:1px solid var(--gold);background:var(--gold);color:#171b18;font-weight:700;border-radius:9px;padding:13px 15px;font-size:14px;width:100%;margin-top:10px}
+button:disabled{opacity:.45}
+#log{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,monospace;color:#d9d2c2;max-height:360px;overflow:auto}
+#progress{height:9px;background:#101410;border-radius:20px;overflow:hidden;margin-top:10px}#bar{height:100%;width:0;background:var(--gold);transition:width .15s}
+video{width:100%;background:#090b09;border-radius:9px;max-height:65vh}
+.status{display:inline-block;border:1px solid var(--line);border-radius:30px;padding:4px 10px;font-size:12px;color:var(--muted)}
+.good{color:var(--green);border-color:#55745a}.bad{color:var(--red);border-color:#80534d}.warn{color:var(--yellow);border-color:#776943}
+</style></head>
+<body><main>
+<div class="sub">SCENEFORGE STUDIO V2.0 · POC 03E</div>
+<h1>30-Second Append-only MP4 Test</h1>
+<p>Revisi arsitektur output. MP4 memakai fragmented mode dan AppendOnlyStreamTarget, sehingga data ditulis berurutan tanpa penulisan ulang pada posisi byte sebelumnya. Frame dan audio tetap diproses per blok 1 detik.</p>
+<section class="panel">
+ <b>Device</b><div id="device" class="muted"></div>
+ <div style="margin-top:10px"><b>Test specification</b><div class="muted">1080 × 1920 · 30 FPS · 900 frames · H.264 + AAC-LC · fragmented MP4</div></div>
+ <div id="progress"><div id="bar"></div></div><div id="pct" class="muted">Belum dimulai</div>
+ <div id="written" class="muted">Sequential output: 0 bytes</div>
+</section>
+<button id="start">Start 30-second Append-only Test</button>
+<section class="panel"><b>Export Log</b><div id="log">Menunggu pengujian.</div></section>
+<section class="panel" id="result" hidden><b>MP4 Verification</b><div id="status" class="status">Pending</div><p id="verify"></p><video id="player" controls playsinline></video></section>
+<section class="panel"><b>Perubahan arsitektur</b><p class="muted" style="margin-bottom:0">Tes sebelumnya memakai MP4 biasa dengan StreamTarget yang dapat meminta penulisan pada offset berbeda. Tes ini memakai fragmented MP4 + AppendOnlyStreamTarget. Mediabunny mendokumentasikan konfigurasi fragmented MP4 sebagai append-only, sedangkan AppendOnlyStreamTarget hanya menerima byte yang ditambahkan berurutan. Ini menghindari positional rewrite pada file target.</p></section>
+<section class="panel"><b>Sebelum mulai</b><p class="muted" style="margin-bottom:0">Chrome akan meminta lokasi penyimpanan. Folder Download boleh digunakan. Biarkan tab tetap terbuka dan di depan sampai selesai. Setelah berhasil, putar video dan periksa tiga bunyi penanda: awal, detik 15, dan menjelang detik 30.</p></section>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id);
+const lines=[];
+function log(message){
+ lines.push(message);
+ $("log").textContent=lines.join("\\n");
+ $("log").scrollTop=$("log").scrollHeight;
+}
+function progress(value,label){
+ $("bar").style.width=Math.max(0,Math.min(100,value))+"%";
+ $("pct").textContent=label;
+}
+$("device").textContent=navigator.userAgent+" · secure="+isSecureContext;
+let previewUrl=null;
+
+$("start").addEventListener("click",async()=>{
+ if(typeof showSaveFilePicker!=="function"){
+  log("FAILED: File System Access save picker tidak tersedia.");
+  return;
+ }
+ $("start").disabled=true;
+ $("result").hidden=true;
+ lines.length=0;
+ $("log").textContent="";
+ let handle=null,writable=null,output=null,videoSource=null,audioSource=null,finalized=false;
+ try{
+  // Request file destination immediately from the user gesture.
+  handle=await showSaveFilePicker({
+   suggestedName:"sceneforge-poc-03e-append-only.mp4",
+   types:[{description:"MP4 video",accept:{"video/mp4":[".mp4"]}}]
+  });
+  writable=await handle.createWritable();
+
+  progress(1,"Memuat Mediabunny 1.66.2…");
+  const mod=await import("https://cdn.jsdelivr.net/npm/mediabunny@1.66.2/+esm");
+  const {
+   Output,Mp4OutputFormat,AppendOnlyStreamTarget,
+   CanvasSource,AudioBufferSource,Quality
+  }=mod;
+  if(!Output||!Mp4OutputFormat||!AppendOnlyStreamTarget){
+   throw new Error("Mediabunny tidak menyediakan API output yang diperlukan.");
+  }
+  log("Mediabunny 1.66.2 berhasil dimuat.");
+
+  const WIDTH=1080,HEIGHT=1920,FPS=30,SECONDS=30;
+  const FRAMES=FPS*SECONDS,SAMPLE_RATE=48000;
+
+  const canvas=document.createElement("canvas");
+  canvas.width=WIDTH;canvas.height=HEIGHT;
+  const ctx=canvas.getContext("2d",{alpha:false});
+  if(!ctx)throw new Error("Canvas 2D context tidak tersedia.");
+
+  videoSource=new CanvasSource(canvas,{
+   codec:"avc",
+   quality:new Quality({bitrate:8000000}),
+   latencyMode:"quality",
+   hardwareAcceleration:"no-preference"
+  });
+  audioSource=new AudioBufferSource({
+   codec:"aac",
+   fullCodecString:"mp4a.40.2",
+   quality:new Quality({bitrate:320000}),
+   transform:{numberOfChannels:2,sampleRate:SAMPLE_RATE}
+  });
+
+  // Fragmented MP4 is append-only; the file stream receives raw Uint8Array chunks.
+  const target=new AppendOnlyStreamTarget(writable);
+  let outputBytes=0,writeEvents=0;
+  target.onwrite=(start,end)=>{
+   // AppendOnlyStreamTarget writes strictly sequential byte ranges.
+   outputBytes=end;
+   writeEvents++;
+   $("written").textContent=`Sequential output: ${outputBytes.toLocaleString("id-ID")} bytes · ${writeEvents.toLocaleString("id-ID")} writes`;
+  };
+
+  const format=new Mp4OutputFormat({
+   fastStart:"fragmented",
+   minimumFragmentDuration:1
+  });
+  output=new Output({format,target});
+  output.addVideoTrack(videoSource,{frameRate:FPS});
+  output.addAudioTrack(audioSource);
+  output.setMetadataTags({title:"SceneForge PoC 03E Append-only Test"});
+
+  await output.start();
+  log("Output started: fragmented MP4 + AppendOnlyStreamTarget.");
+  log("Processing 30 blocks. Each block = 30 video frames + 48,000 audio samples/channel.");
+
+  for(let second=0;second<SECONDS;second++){
+   for(let localFrame=0;localFrame<FPS;localFrame++){
+    const index=second*FPS+localFrame;
+    const timestamp=index/FPS;
+    const x=150+780*(index/(FRAMES-1));
+    ctx.fillStyle="#171b18";ctx.fillRect(0,0,WIDTH,HEIGHT);
+    ctx.fillStyle="#29372d";ctx.fillRect(70,160,940,1600);
+    ctx.textAlign="center";ctx.fillStyle="#d9d1be";
+    ctx.font="bold 76px system-ui";ctx.fillText("SCENEFORGE PoC",WIDTH/2,420);
+    ctx.font="52px system-ui";ctx.fillText("APPEND-ONLY MP4",WIDTH/2,520);
+    ctx.fillStyle="#a68b62";ctx.beginPath();ctx.arc(x,930,72,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#e7e2d5";ctx.font="42px system-ui";
+    ctx.fillText(`Frame ${index+1} / ${FRAMES}`,WIDTH/2,1160);
+    ctx.font="36px system-ui";ctx.fillText(`${timestamp.toFixed(2)} seconds`,WIDTH/2,1230);
+    await videoSource.add(timestamp,1/FPS);
+   }
+
+   const audioBuffer=new AudioBuffer({
+    numberOfChannels:2,length:SAMPLE_RATE,sampleRate:SAMPLE_RATE
+   });
+   for(let channel=0;channel<2;channel++){
+    const samples=audioBuffer.getChannelData(channel);
+    for(let sample=0;sample<SAMPLE_RATE;sample++){
+     const time=second+sample/SAMPLE_RATE;
+     const marker=(time<0.12)||
+       (time>=14.94&&time<15.06)||
+       (time>=29.82&&time<29.94);
+     samples[sample]=marker?0.12*Math.sin(2*Math.PI*880*time):0;
+    }
+   }
+   await audioSource.add(audioBuffer);
+
+   progress(((second+1)/SECONDS)*84,
+     `Processing second ${second+1}/${SECONDS} · ${Math.min((second+1)*FPS,FRAMES)}/${FRAMES} frames`);
+   if(second===0||second===14||second===29){
+    log(`Timeline checkpoint: ${second+1}s submitted; output so far ${outputBytes.toLocaleString("id-ID")} bytes.`);
+   }
+  }
+
+  log("All 900 frames and 30 audio blocks submitted.");
+  videoSource.close();
+  audioSource.close();
+
+  progress(90,"Finalizing fragmented MP4…");
+  await output.finalize();
+  finalized=true;
+  log(`output.finalize() resolved. Output state: ${output.state}.`);
+
+  // The target is closed by Output.finalize(); now verify the committed file.
+  const file=await handle.getFile();
+  log(`Disk verification: ${file.size.toLocaleString("id-ID")} bytes.`);
+  log(`Append-only target reported: ${outputBytes.toLocaleString("id-ID")} bytes across ${writeEvents} writes.`);
+  if(file.size<1000){
+   throw new Error(`Final file is too small (${file.size} bytes); target reported ${outputBytes} bytes.`);
+  }
+
+  const head=new Uint8Array(await file.slice(0,16).arrayBuffer());
+  const headerText=Array.from(head.slice(4,8)).map(x=>String.fromCharCode(x)).join("");
+  log(`MP4 header check: ${headerText==="ftyp"?"ftyp OK":"unexpected box "+headerText}.`);
+  if(headerText!=="ftyp")throw new Error("Output does not start with an MP4 ftyp box.");
+
+  if(previewUrl)URL.revokeObjectURL(previewUrl);
+  previewUrl=URL.createObjectURL(file);
+  $("player").src=previewUrl;
+  $("verify").textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MiB · ${file.size.toLocaleString("id-ID")} bytes. Header ftyp valid. Putar video untuk memeriksa gambar dan tiga bunyi penanda.`;
+  $("status").textContent="PASS · MP4 file committed";
+  $("status").className="status good";
+  $("result").hidden=false;
+  progress(100,"Append-only MP4 export complete");
+  log("PASS: non-zero file committed and MP4 header verified.");
+ }catch(error){
+  if(error.name==="AbortError"){
+   progress(0,"File selection cancelled");
+   log("File picker dibatalkan.");
+  }else{
+   $("status").textContent="FAIL · Append-only MP4 test";
+   $("status").className="status bad";
+   $("result").hidden=false;
+   progress(0,"Export failed");
+   log(`FAILED: ${error.name||"Error"}: ${error.message}`);
+   if(error.stack)log(error.stack);
+   if(output&&!finalized){
+    try{await output.cancel();}catch(cancelError){log("Cancel error: "+cancelError.message);}
+   }else if(writable&&!finalized){
+    try{await writable.abort();}catch(abortError){log("Abort error: "+abortError.message);}
+   }
+  }
+ }finally{
+  $("start").disabled=false;
+ }
+});
+</script></body></html>
