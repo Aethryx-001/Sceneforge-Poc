@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171b18">
+<title>SceneForge PoC 03D | Direct File Stream Test</title>
+<style>
+:root{color-scheme:dark;--bg:#171b18;--panel:#222a24;--line:#3b493e;--text:#e7e2d5;--muted:#b5b09f;--gold:#a68b62;--green:#91b58d;--red:#d98b80;--yellow:#d6bd7c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px 14px 40px}
+main{max-width:760px;margin:auto}h1{font:600 25px/1.2 Georgia,serif;margin:0 0 6px}.sub{font-size:12px;letter-spacing:.12em;color:var(--gold)}p,.muted{color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px;margin:13px 0}
+button{border:1px solid var(--gold);background:var(--gold);color:#171b18;font-weight:700;border-radius:9px;padding:13px 15px;font-size:14px;width:100%;margin-top:10px}
+button:disabled{opacity:.45}button.secondary{background:transparent;color:var(--text);border-color:var(--line)}
+#log{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,monospace;color:#d9d2c2;max-height:360px;overflow:auto}
+#progress{height:9px;background:#101410;border-radius:20px;overflow:hidden;margin-top:10px}#bar{height:100%;width:0;background:var(--gold);transition:width .15s}
+video{width:100%;background:#090b09;border-radius:9px;max-height:65vh}
+.status{display:inline-block;border:1px solid var(--line);border-radius:30px;padding:4px 10px;font-size:12px;color:var(--muted)}
+.good{color:var(--green);border-color:#55745a}.bad{color:var(--red);border-color:#80534d}.warn{color:var(--yellow);border-color:#776943}
+</style></head>
+<body><main>
+<div class="sub">SCENEFORGE STUDIO V2.0 · POC 03D</div>
+<h1>Direct File Stream Test</h1>
+<p>Uji minimal integrasi Mediabunny dengan File System Access API. StreamTarget menerima langsung FileSystemWritableFileStream, tanpa WritableStream perantara. Durasi 2 detik untuk isolasi masalah.</p>
+<section class="panel">
+ <b>Device</b><div id="device" class="muted"></div>
+ <div style="margin-top:10px"><b>Test specification</b><div class="muted">1080 × 1920 · 30 FPS · 60 frames · H.264 + AAC-LC · MP4</div></div>
+ <div id="progress"><div id="bar"></div></div><div id="pct" class="muted">Belum dimulai</div>
+ <div id="written" class="muted">Target reported: 0 bytes</div>
+</section>
+<button id="start">Start 2-second Direct Stream Test</button>
+<section class="panel"><b>Export Log</b><div id="log">Menunggu pengujian.</div></section>
+<section class="panel" id="result" hidden><b>MP4 Verification</b><div id="status" class="status">Pending</div><p id="verify"></p><video id="player" controls playsinline></video></section>
+<section class="panel"><b>Kenapa tes ini berbeda?</b><p class="muted" style="margin-bottom:0">PoC 03B memakai WritableStream perantara. PoC 03D mengikuti contoh resmi Mediabunny: StreamTarget menerima FileSystemWritableFileStream langsung. Kalau lulus, jalur file langsung terbukti. Kalau gagal, kita punya log yang menunjukkan apakah target menerima data dan apakah file benar-benar tersimpan.</p></section>
+</main>
+<script type="module">
+const $=id=>document.getElementById(id), logLines=[];
+function log(s){logLines.push(s);$("log").textContent=logLines.join("\\n");$("log").scrollTop=$("log").scrollHeight}
+function progress(v,label){$("bar").style.width=Math.max(0,Math.min(100,v))+"%";$("pct").textContent=label}
+$("device").textContent=navigator.userAgent+" · secure="+isSecureContext;
+let resultUrl=null;
+$("start").addEventListener("click",async()=>{
+ if(typeof showSaveFilePicker!=="function"){
+  log("FAILED: showSaveFilePicker tidak tersedia.");return;
+ }
+ $("start").disabled=true;$("result").hidden=true;logLines.length=0;$("log").textContent="";
+ let output=null,videoSource=null,audioSource=null,writable=null,finalized=false;
+ try{
+  // Picker is called directly in the click gesture.
+  const handle=await showSaveFilePicker({
+   suggestedName:"sceneforge-poc-03d-direct-stream.mp4",
+   types:[{description:"MP4 video",accept:{"video/mp4":[".mp4"]}}]
+  });
+  writable=await handle.createWritable();
+  progress(2,"Memuat Mediabunny 1.66.2…");
+  const mod=await import("https://cdn.jsdelivr.net/npm/mediabunny@1.66.2/+esm");
+  const {Output,Mp4OutputFormat,StreamTarget,CanvasSource,AudioBufferSource,Quality}=mod;
+  log("Mediabunny 1.66.2 loaded.");
+  const W=1080,H=1920,FPS=30,SECONDS=2,FRAMES=FPS*SECONDS,SAMPLE_RATE=48000;
+  const canvas=document.createElement("canvas");canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext("2d",{alpha:false});
+  if(!ctx)throw new Error("Canvas 2D context tidak tersedia.");
+  videoSource=new CanvasSource(canvas,{
+   codec:"avc",
+   quality:new Quality({bitrate:8000000}),
+   latencyMode:"quality",
+   hardwareAcceleration:"no-preference"
+  });
+  audioSource=new AudioBufferSource({
+   codec:"aac",
+   fullCodecString:"mp4a.40.2",
+   quality:new Quality({bitrate:320000}),
+   transform:{numberOfChannels:2,sampleRate:SAMPLE_RATE}
+  });
+  // Direct FileSystemWritableFileStream: no custom bridge.
+  const target=new StreamTarget(writable,{chunked:true,chunkSize:256*1024});
+  let maxEnd=0,writeEvents=0;
+  target.onwrite=(start,end)=>{
+   maxEnd=Math.max(maxEnd,end);writeEvents++;
+   $("written").textContent=`Target reported: ${maxEnd.toLocaleString("id-ID")} bytes · ${writeEvents} writes`;
+  };
+  output=new Output({
+   format:new Mp4OutputFormat({fastStart:false}),
+   target
+  });
+  output.addVideoTrack(videoSource,{frameRate:FPS});
+  output.addAudioTrack(audioSource);
+  output.setMetadataTags({title:"SceneForge PoC 03D Direct Stream"});
+  await output.start();
+  log("Output started. StreamTarget is connected directly to FileSystemWritableFileStream.");
+  for(let i=0;i<FRAMES;i++){
+   const t=i/FPS,x=150+780*(i/(FRAMES-1));
+   ctx.fillStyle="#171b18";ctx.fillRect(0,0,W,H);
+   ctx.fillStyle="#29372d";ctx.fillRect(70,160,940,1600);
+   ctx.textAlign="center";ctx.fillStyle="#d9d1be";
+   ctx.font="bold 76px system-ui";ctx.fillText("SCENEFORGE PoC",W/2,420);
+   ctx.font="52px system-ui";ctx.fillText("DIRECT FILE STREAM",W/2,520);
+   ctx.fillStyle="#a68b62";ctx.beginPath();ctx.arc(x,930,72,0,Math.PI*2);ctx.fill();
+   ctx.fillStyle="#e7e2d5";ctx.font="42px system-ui";ctx.fillText(`Frame ${i+1} / ${FRAMES}`,W/2,1160);
+   ctx.font="36px system-ui";ctx.fillText(`${t.toFixed(2)} seconds`,W/2,1230);
+   await videoSource.add(t,1/FPS);
+   if(i%5===0||i===FRAMES-1)progress(5+70*((i+1)/FRAMES),`Encoding frame ${i+1}/${FRAMES}`);
+  }
+  log("All 60 frames submitted.");
+  progress(78,"Creating 48 kHz stereo audio…");
+  const samples=SAMPLE_RATE*SECONDS;
+  const audioBuffer=new AudioBuffer({numberOfChannels:2,length:samples,sampleRate:SAMPLE_RATE});
+  for(let channel=0;channel<2;channel++){
+   const data=audioBuffer.getChannelData(channel);
+   for(let n=0;n<samples;n++){
+    const t=n/SAMPLE_RATE;
+    const active=(t<0.12)||(t>=0.94&&t<1.06)||(t>=1.86);
+    data[n]=active?0.12*Math.sin(2*Math.PI*880*t):0;
+   }
+  }
+  await audioSource.add(audioBuffer);
+  log("AAC audio block submitted: 96,000 samples per channel.");
+  videoSource.close();audioSource.close();
+  progress(90,"Finalizing MP4…");
+  await output.finalize();finalized=true;
+  log("output.finalize() resolved.");
+  const file=await handle.getFile();
+  log(`FileSystemFileHandle.getFile(): ${file.size} bytes.`);
+  log(`StreamTarget reported maximum byte end: ${maxEnd} bytes across ${writeEvents} writes.`);
+  if(file.size<1000)throw new Error(`File readback size is ${file.size} bytes. Target-reported end was ${maxEnd} bytes.`);
+  if(file.size<maxEnd)log("WARNING: file size is smaller than target-reported byte end.");
+  if(resultUrl)URL.revokeObjectURL(resultUrl);
+  resultUrl=URL.createObjectURL(file);
+  $("player").src=resultUrl;
+  $("verify").textContent=`File: ${file.name} · ${(file.size/1024).toFixed(1)} KiB · ${file.size.toLocaleString("id-ID")} bytes. Putar video dan periksa dua bunyi penanda.`;
+  $("status").textContent="PASS · MP4 file exists";$("status").className="status good";
+  $("result").hidden=false;progress(100,"Direct stream export complete");
+  log("PASS: file has non-zero size after finalization.");
+ }catch(e){
+  if(e.name==="AbortError"){progress(0,"Cancelled");log("File picker cancelled.")}
+  else{
+   $("status").textContent="FAIL · Direct stream test";$("status").className="status bad";
+   $("result").hidden=false;
+   log(`FAILED: ${e.name||"Error"}: ${e.message}`);
+   if(e.stack)log(e.stack);
+   progress(0,"Direct stream export failed");
+   if(output&&!finalized){try{await output.cancel()}catch(_){}}
+   else if(writable&&!finalized){try{await writable.abort()}catch(_){}}
+  }
+ }finally{$("start").disabled=false}
+});
+</script></body></html>
