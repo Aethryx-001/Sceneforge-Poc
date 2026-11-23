@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171b18">
+<title>SceneForge PoC 03C | File Write Diagnostic</title>
+<style>
+:root{color-scheme:dark;--bg:#171b18;--panel:#222a24;--line:#3b493e;--text:#e7e2d5;--muted:#b5b09f;--gold:#a68b62;--green:#91b58d;--red:#d98b80;--yellow:#d6bd7c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:20px 14px 40px}
+main{max-width:760px;margin:auto}h1{font:600 25px/1.2 Georgia,serif;margin:0 0 6px}.sub{font-size:12px;letter-spacing:.12em;color:var(--gold)}p,.muted{color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px;margin:13px 0}
+button{border:1px solid var(--gold);background:var(--gold);color:#171b18;font-weight:700;border-radius:9px;padding:13px 15px;font-size:14px;width:100%;margin-top:10px}
+button:disabled{opacity:.45}button.secondary{background:transparent;color:var(--text);border-color:var(--line)}
+#log{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,monospace;color:#d9d2c2;max-height:360px;overflow:auto}
+.status{display:inline-block;border:1px solid var(--line);border-radius:30px;padding:4px 10px;font-size:12px;color:var(--muted)}
+.good{color:var(--green);border-color:#55745a}.bad{color:var(--red);border-color:#80534d}.warn{color:var(--yellow);border-color:#776943}
+</style></head>
+<body><main>
+<div class="sub">SCENEFORGE STUDIO V2.0 · POC 03C</div>
+<h1>File Write Diagnostic</h1>
+<p>Tes terpisah untuk memastikan Chrome Android benar-benar menulis dan melakukan commit file melalui File System Access API. Tidak menggunakan Mediabunny atau encoder.</p>
+<section class="panel">
+ <b>Browser</b><div id="browser" class="muted"></div>
+ <div style="margin-top:10px"><b>API status</b><div id="api" class="muted"></div></div>
+ <div style="margin-top:10px"><b>Result</b><div id="status" class="status">Belum diuji</div></div>
+</section>
+<button id="run">Run File Write Test</button>
+<section class="panel"><b>Diagnostic Log</b><div id="log">Menunggu pengujian.</div></section>
+<section class="panel"><b>Apa yang dilakukan?</b><p class="muted" style="margin-bottom:0">Chrome akan meminta lokasi untuk menyimpan file teks kecil bernama sceneforge-filesystem-test.txt. Halaman menulis teks pada byte 0 dan byte 128, menutup file, lalu membaca ulang file yang sama dan memeriksa ukuran serta isi. File ini hanya berisi teks tes.</p></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const lines=[];
+function log(s){lines.push(s);$("log").textContent=lines.join("\\n")}
+function result(text,kind){$("status").textContent=text;$("status").className="status "+kind}
+$("browser").textContent=navigator.userAgent+" · protocol="+location.protocol+" · secure="+isSecureContext;
+const supported=typeof showSaveFilePicker==="function"&&"createWritable" in FileSystemFileHandle.prototype;
+$("api").textContent=`showSaveFilePicker: ${typeof showSaveFilePicker}; FileSystemFileHandle: ${typeof FileSystemFileHandle}; createWritable: ${supported?"available":"not confirmed"}`;
+$("run").addEventListener("click",async()=>{
+ $("run").disabled=true;lines.length=0;$("log").textContent="";result("Sedang diuji","warn");
+ let writable=null,closed=false;
+ try{
+  if(typeof showSaveFilePicker!=="function")throw new Error("showSaveFilePicker tidak tersedia.");
+  log("1. Membuka file picker…");
+  const handle=await showSaveFilePicker({
+   suggestedName:"sceneforge-filesystem-test.txt",
+   types:[{description:"Text diagnostic file",accept:{"text/plain":[".txt"]}}]
+  });
+  log("2. File dipilih. Membuka writable stream…");
+  writable=await handle.createWritable();
+  const encoder=new TextEncoder();
+  const header=encoder.encode("SCENEFORGE FILE WRITE TEST\\n");
+  const marker=encoder.encode("POSITION_128_OK");
+  log("3. Menulis header pada byte 0…");
+  await writable.write({type:"write",position:0,data:header});
+  log(`   Header write resolved: ${header.byteLength} bytes.`);
+  log("4. Menulis marker pada byte 128…");
+  await writable.write({type:"write",position:128,data:marker});
+  log(`   Positional write resolved: ${marker.byteLength} bytes.`);
+  log("5. Menutup writable stream untuk commit…");
+  await writable.close();closed=true;
+  log("   close() resolved.");
+  log("6. Membaca kembali file dari handle yang sama…");
+  const file=await handle.getFile();
+  log(`   File size: ${file.size} bytes.`);
+  const content=new Uint8Array(await file.arrayBuffer());
+  const text=new TextDecoder().decode(content);
+  const headerOK=text.startsWith("SCENEFORGE FILE WRITE TEST");
+  const markerOK=text.slice(128,128+marker.length)==="POSITION_128_OK";
+  log(`   Header readback: ${headerOK?"OK":"FAIL"}.`);
+  log(`   Positional marker readback: ${markerOK?"OK":"FAIL"}.`);
+  if(file.size===143&&headerOK&&markerOK){
+   result("PASS · File API write and commit works","good");
+   log("PASS: expected file size and both text markers verified.");
+  }else{
+   result("FAIL · File API readback mismatch","bad");
+   log(`FAIL: expected 143 bytes; got ${file.size}.`);
+  }
+ }catch(e){
+  if(e.name==="AbortError"){result("Cancelled by user","warn");log("File picker dibatalkan.")}
+  else{result("ERROR · File API test failed","bad");log(`${e.name}: ${e.message}`);if(e.stack)log(e.stack)}
+  if(writable&&!closed){try{await writable.abort()}catch(_){}}
+ }finally{$("run").disabled=false}
+});
+</script></body></html>
