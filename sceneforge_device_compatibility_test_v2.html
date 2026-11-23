@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171b18">
+<title>SceneForge | Compatibility Test 01B</title>
+<style>
+:root{color-scheme:dark;--bg:#171b18;--panel:#222a24;--line:#3b493e;--text:#e7e2d5;--muted:#b5b09f;--gold:#a68b62;--green:#91b58d;--red:#d98b80;--yellow:#d6bd7c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:22px 14px 40px}
+main{max-width:760px;margin:auto}h1{font:600 25px/1.2 Georgia,serif;margin:0 0 6px}p{color:var(--muted);margin:7px 0 18px}
+.sub{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--gold)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px;margin:13px 0}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border:0}.name{font-weight:600}.detail{font-size:12px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+.status{font-size:12px;border:1px solid var(--line);border-radius:20px;padding:4px 9px;white-space:nowrap;color:var(--muted)}
+.pass{color:var(--green);border-color:#55745a}.fail{color:var(--red);border-color:#80534d}.warn{color:var(--yellow);border-color:#776943}
+button{border:1px solid var(--gold);background:var(--gold);color:#171b18;font-weight:700;border-radius:9px;padding:12px 15px;font-size:14px;width:100%;margin-top:10px}
+button.secondary{background:transparent;color:var(--text);border-color:var(--line)}
+small{color:var(--muted)}.note{font-size:13px}
+</style>
+</head>
+<body><main>
+<div class="sub">SCENEFORGE STUDIO V2.0 · POC 01B</div>
+<h1>Device Compatibility Test</h1>
+<p>Revisi pemeriksaan H.264 dan OPFS. Tidak membuat video atau mengubah file di perangkat.</p>
+<section class="panel"><b id="summary">Menyiapkan pemeriksaan…</b><br><small id="environment"></small></section>
+<section class="panel" id="results" aria-live="polite"></section>
+<button id="audioTest">Test AudioContext</button>
+<button id="runAgain" class="secondary">Run Test Again</button>
+<section class="panel note"><b>Perhatian</b><p style="margin-bottom:0">H.264 diuji dengan beberapa profile/level. Kandidat Full HD adalah 1080 × 1920 pada 30 FPS dengan Level 4.0. Tes ini hanya memeriksa apakah konfigurasi diterima browser. Tes encode dan MP4 sungguhan dilakukan terpisah. OPFS hanya diuji langsung pada HTTPS atau localhost; pada pembuka file lokal hasilnya ditandai belum bisa dipastikan.</p></section>
+</main>
+<script>
+const $=id=>document.getElementById(id), results=[];
+function add(name,status,detail){results.push({name,status,detail});render()}
+function addOrReplace(name,status,detail){
+ const index=results.findIndex(x=>x.name===name);
+ const item={name,status,detail};
+ if(index>=0)results[index]=item;else results.push(item);
+ render();
+}
+function render(){
+ $("results").innerHTML=results.map(r=>`<div class="row"><div><div class="name">${r.name}</div><div class="detail">${r.detail}</div></div><span class="status ${r.status==="SUPPORTED"?"pass":r.status==="UNSUPPORTED"?"fail":"warn"}">${r.status}</span></div>`).join("");
+ $("summary").textContent=`${results.filter(x=>x.status==="SUPPORTED").length} Supported · ${results.filter(x=>x.status==="UNSUPPORTED").length} Unsupported · ${results.filter(x=>x.status==="WARNING").length} Needs retest · ${results.length} checks`;
+}
+async function codecTest(label,config){
+ if(typeof VideoEncoder!=="function"||typeof VideoEncoder.isConfigSupported!=="function"){
+  add(label,"UNSUPPORTED","VideoEncoder API tidak tersedia.");return;
+ }
+ try{
+  const r=await VideoEncoder.isConfigSupported(config);
+  add(label,r.supported?"SUPPORTED":"UNSUPPORTED",
+   r.supported?`Diterima browser: ${JSON.stringify(r.config||config)}`:`Ditolak browser: ${JSON.stringify(config)}`);
+ }catch(e){add(label,"UNSUPPORTED",`${e.name}: ${e.message}`)}
+}
+async function run(){
+ results.length=0;render();
+ $("environment").textContent=`${navigator.userAgent} · Protocol: ${location.protocol} · Secure context: ${window.isSecureContext?"yes":"no"}`;
+ add("Secure Context",window.isSecureContext?"SUPPORTED":"UNSUPPORTED",window.isSecureContext?"Secure context aktif.":"API tertentu membutuhkan HTTPS atau localhost.");
+ try{const c=document.createElement("canvas");c.width=16;c.height=16;const ok=!!c.getContext("2d");add("Canvas 2D",ok?"SUPPORTED":"UNSUPPORTED",ok?"Context berhasil dibuat.":"Context tidak tersedia.")}catch(e){add("Canvas 2D","UNSUPPORTED",e.message)}
+ add("OffscreenCanvas",typeof OffscreenCanvas==="function"?"SUPPORTED":"UNSUPPORTED","Pemeriksaan API; transfer ke Worker belum diuji.");
+ let gl=false;try{const c=document.createElement("canvas");gl=!!(c.getContext("webgl2")||c.getContext("webgl"))}catch(e){}
+ add("WebGL",gl?"SUPPORTED":"UNSUPPORTED",gl?"Context berhasil dibuat.":"Context tidak tersedia.");
+ add("WebCodecs API",typeof VideoEncoder==="function"&&typeof AudioEncoder==="function"?"SUPPORTED":"UNSUPPORTED",`VideoEncoder: ${typeof VideoEncoder}; AudioEncoder: ${typeof AudioEncoder}.`);
+
+ await codecTest("H.264 Full HD · Baseline Level 4.0",{
+  codec:"avc1.420028",width:1080,height:1920,bitrate:8000000,framerate:30
+ });
+ await codecTest("H.264 Full HD · Main Level 4.0",{
+  codec:"avc1.4d0028",width:1080,height:1920,bitrate:8000000,framerate:30
+ });
+ await codecTest("H.264 Full HD · High Level 4.0",{
+  codec:"avc1.640028",width:1080,height:1920,bitrate:8000000,framerate:30
+ });
+ await codecTest("H.264 HD diagnostic · Baseline Level 3.1",{
+  codec:"avc1.42001f",width:720,height:1280,bitrate:5000000,framerate:30
+ });
+
+ if(typeof AudioEncoder==="function"&&typeof AudioEncoder.isConfigSupported==="function"){
+  try{
+   const a=await AudioEncoder.isConfigSupported({codec:"mp4a.40.2",sampleRate:48000,numberOfChannels:2,bitrate:320000});
+   add("AAC-LC AudioEncoder",a.supported?"SUPPORTED":"UNSUPPORTED",a.supported?`Diterima browser: ${JSON.stringify(a.config||{})}`:"Konfigurasi AAC-LC ditolak.");
+  }catch(e){add("AAC-LC AudioEncoder","UNSUPPORTED",`${e.name}: ${e.message}`)}
+ }else add("AAC-LC AudioEncoder","UNSUPPORTED","AudioEncoder API tidak tersedia.");
+
+ add("Web Audio API",typeof AudioContext==="function"||typeof webkitAudioContext==="function"?"SUPPORTED":"UNSUPPORTED","Tekan Test AudioContext untuk menguji pembuatan context.");
+ add("IndexedDB",window.indexedDB?"SUPPORTED":"UNSUPPORTED",window.indexedDB?"IndexedDB tersedia.":"IndexedDB tidak tersedia.");
+
+ if(location.protocol==="https:"||location.hostname==="localhost"||location.hostname==="127.0.0.1"){
+  let status="UNSUPPORTED",detail="OPFS tidak tersedia.";
+  try{
+   if(navigator.storage&&typeof navigator.storage.getDirectory==="function"){
+    await navigator.storage.getDirectory();status="SUPPORTED";detail="OPFS root dapat diakses. Belum melakukan penulisan file.";
+   }
+  }catch(e){detail=`Gagal mengakses OPFS: ${e.name}: ${e.message}`;}
+  add("OPFS",status,detail);
+ }else{
+  add("OPFS","WARNING",`Belum diuji pada origin web normal. Halaman saat ini memakai ${location.protocol}. Jalankan ulang dari HTTPS untuk hasil yang valid.`);
+ }
+ add("File System Access API",typeof showSaveFilePicker==="function"?"SUPPORTED":"UNSUPPORTED",typeof showSaveFilePicker==="function"?"Save picker tersedia.":"Tidak tersedia; perlu download fallback.");
+ add("Blob Download Fallback",typeof Blob==="function"&&!!URL.createObjectURL?"SUPPORTED":"UNSUPPORTED","Kemampuan Blob URL tersedia; proses unduhan belum diuji.");
+}
+$("audioTest").addEventListener("click",async()=>{
+ const C=window.AudioContext||window.webkitAudioContext;
+ if(!C){addOrReplace("AudioContext Runtime","UNSUPPORTED","AudioContext tidak tersedia.");return}
+ let c;
+ try{c=new C();await c.resume();addOrReplace("AudioContext Runtime",c.state==="running"?"SUPPORTED":"WARNING",`State: ${c.state}; sample rate: ${c.sampleRate} Hz.`)}
+ catch(e){addOrReplace("AudioContext Runtime","UNSUPPORTED",`${e.name}: ${e.message}`)}
+ finally{if(c)await c.close().catch(()=>{})}
+});
+$("runAgain").addEventListener("click",run);
+run();
+</script>
+</body></html>
